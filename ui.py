@@ -59,18 +59,6 @@ class BETTERIMG_PT_main_panel(Panel):
         row.operator("better_image.capture_screen", text="Screen", icon='DESKTOP')
         row.operator("better_image.paste_from_clipboard", text="Paste", icon='PASTEDOWN')
         
-        if props.is_recording:
-             row.operator("better_image.record_gif", text="Stop Rec", icon='REC')
-        else:
-             row.operator("better_image.record_gif", text="Record GIF", icon='RENDER_ANIMATION')
-            
-        # check if active image is a recording sequence
-        if context.space_data.type == 'IMAGE_EDITOR':
-            img = context.space_data.image
-            if img and img.source == 'SEQUENCE' and img.name == "Screen Recording":
-                layout.operator("better_image.export_gif", text="Export to GIF", icon='EXPORT')
-                layout.operator("better_image.open_export_folder", text="", icon='FILE_FOLDER')
-        
         layout.separator()
         
         # Tools Grid

@@ -309,66 +309,9 @@ def copy_pixels_to_clipboard(pixels, width, height):
     # Check if pixels are floats or ints
     # Simplest check: try first element
     is_float = isinstance(pixels[0], float)
-    is_struct = isinstance(pixels[0], (list, tuple)) # Check for [r,g,b,a] structure
-
+    
     idx = 0
-    # If is_struct, check if it's 2D (pixels) or 3D (rows)
-    # 2D: [[r,g,b,a], [r,g,b,a]] -> len(pixels) = num_pixels
-    # 3D: [[[r,g,b,a], ...], [[...], ...]] -> len(pixels) = height
-    
-    # Helper for flattening any nested structure
-    def flatten_pixels(p_data):
-        if not isinstance(p_data, (list, tuple)): return [p_data]
-        # Check first item to detect depth
-        if not p_data: return []
-        if isinstance(p_data[0], (list, tuple)):
-             flat = []
-             for item in p_data:
-                 flat.extend(flatten_pixels(item))
-             return flat
-        return p_data
-
-    # Flatten if needed
-    if is_struct:
-        # Check depth: if p[0] is list, it's 3D or more.
-        if isinstance(pixels[0][0], (list, tuple)):
-             pixels = flatten_pixels(pixels)
-             # Now it is flat list of values [r,g,b,a, r,g,b,a ...]
-             # NOT list of pixels [ [r,g,b,a], ... ]
-             # Wait, flatten_pixels completely flattens to scalar values.
-             # My logic below expects either list of structs OR flat scalars.
-             is_struct = False # Now it's a flat list of scalars
-             is_float = isinstance(pixels[0], float)
-        else:
-             # It is 2D: [ [r,g,b,a], ... ]
-             pass
-    
-    if is_struct:
-        # Handle List of Lists (Vector/Tuple per pixel)
-        # 2D Structure: [ [r,g,b,a], [r,g,b,a] ... ]
-        # Assuming RGBA order in the struct
-        is_inner_float = isinstance(pixels[0][0], float)
-        
-        for p in pixels:
-            if is_inner_float:
-                r = int(p[0] * 255)
-                g = int(p[1] * 255)
-                b = int(p[2] * 255)
-                a = int(p[3] * 255)
-            else:
-                r = int(p[0])
-                g = int(p[1])
-                b = int(p[2])
-                a = int(p[3])
-                
-            raw_data[idx] = max(0, min(255, b))
-            raw_data[idx+1] = max(0, min(255, g))
-            raw_data[idx+2] = max(0, min(255, r))
-            raw_data[idx+3] = max(0, min(255, a))
-            idx += 4
-
-    elif is_float:
-        # Flat list of floats
+    if is_float:
         for i in range(0, len(pixels), 4):
             r = int(pixels[i] * 255)
             g = int(pixels[i+1] * 255)
@@ -379,9 +322,8 @@ def copy_pixels_to_clipboard(pixels, width, height):
             raw_data[idx+2] = max(0, min(255, r))
             raw_data[idx+3] = max(0, min(255, a))
             idx += 4
-
     else:
-        # Assumed flat byte/int
+        # Assumed byte/int
         for i in range(0, len(pixels), 4):
             r = pixels[i]
             g = pixels[i+1]
