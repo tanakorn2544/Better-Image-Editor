@@ -128,6 +128,17 @@ class BetterImageEditorProperties(bpy.types.PropertyGroup):
         description="Whether drawing mode is active"
     )
 
+    is_recording: BoolProperty(
+        name="Is Recording",
+        default=False,
+        description="Whether GIF recording is active"
+    )
+
+    recording_start_time: bpy.props.FloatProperty(
+        name="Recording Start Time",
+        default=0.0
+    )
+
     # Dynamic getter/setter for editing selected text
     def get_selected_text(self):
         from . import drawing
