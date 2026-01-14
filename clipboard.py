@@ -299,41 +299,83 @@ def copy_pixels_to_clipboard(pixels, width, height):
     """
     Copy RGBA float pixels (0..1) or byte pixels (0..255) to Windows Clipboard.
     """
+    print(f"[CLIP] copy_pixels_to_clipboard called: {width}x{height}, {len(pixels)} pixel values")
     user32 = ctypes.windll.user32
     kernel32 = ctypes.windll.kernel32
+    
+    # CRITICAL: Set proper return types for 64-bit Windows
+    # Without this, handles get truncated to 32-bit causing ERROR_INVALID_HANDLE (6)
+    kernel32.GlobalAlloc.restype = ctypes.c_void_p
+    kernel32.GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
+    kernel32.GlobalLock.restype = ctypes.c_void_p
+    kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+    kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+    kernel32.GlobalFree.argtypes = [ctypes.c_void_p]
+    user32.SetClipboardData.restype = ctypes.c_void_p
+    user32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
     
     # 1. Convert pixels to BGRA byte array
     buf_size = width * height * 4
     raw_data = bytearray(buf_size)
+    print(f"[CLIP] Expected buf_size: {buf_size}")
     
-    # Check if pixels are floats or ints
-    # Simplest check: try first element
-    is_float = isinstance(pixels[0], float)
+    # Detect structure
+    if not pixels:
+        print("[CLIP] ERROR: No pixels!")
+        return False
+    first = pixels[0]
+    is_nested = isinstance(first, (list, tuple))
+    print(f"[CLIP] first pixel type: {type(first)}, is_nested: {is_nested}")
     
     idx = 0
-    if is_float:
-        for i in range(0, len(pixels), 4):
-            r = int(pixels[i] * 255)
-            g = int(pixels[i+1] * 255)
-            b = int(pixels[i+2] * 255)
-            a = int(pixels[i+3] * 255)
-            raw_data[idx] = max(0, min(255, b))
-            raw_data[idx+1] = max(0, min(255, g))
-            raw_data[idx+2] = max(0, min(255, r))
-            raw_data[idx+3] = max(0, min(255, a))
-            idx += 4
+    if is_nested:
+        # Nested List Case (e.g. [[r,g,b,a], ...])
+        is_float = isinstance(first[0], float)
+        for p in pixels:
+            if is_float:
+                r = int(p[0] * 255); g = int(p[1] * 255); b = int(p[2] * 255); a = int(p[3] * 255)
+            else:
+                r = p[0]; g = p[1]; b = p[2]; a = p[3]
+            
+            # BGRA
+            if idx + 3 < len(raw_data):
+                raw_data[idx] = max(0, min(255, b))
+                raw_data[idx+1] = max(0, min(255, g))
+                raw_data[idx+2] = max(0, min(255, r))
+                raw_data[idx+3] = max(0, min(255, a))
+                idx += 4
     else:
-        # Assumed byte/int
-        for i in range(0, len(pixels), 4):
-            r = pixels[i]
-            g = pixels[i+1]
-            b = pixels[i+2]
-            a = pixels[i+3]
-            raw_data[idx] = b
-            raw_data[idx+1] = g
-            raw_data[idx+2] = r
-            raw_data[idx+3] = a
-            idx += 4
+        # Flat List Case
+        is_float = isinstance(first, float)
+        if is_float:
+            for i in range(0, len(pixels), 4):
+                if i+3 >= len(pixels): break
+                r = int(pixels[i] * 255)
+                g = int(pixels[i+1] * 255)
+                b = int(pixels[i+2] * 255)
+                a = int(pixels[i+3] * 255)
+                if idx + 3 < len(raw_data):
+                   raw_data[idx] = max(0, min(255, b))
+                   raw_data[idx+1] = max(0, min(255, g))
+                   raw_data[idx+2] = max(0, min(255, r))
+                   raw_data[idx+3] = max(0, min(255, a))
+                   idx += 4
+        else:
+            # Assumed byte/int
+            for i in range(0, len(pixels), 4):
+                if i+3 >= len(pixels): break
+                r = pixels[i]
+                g = pixels[i+1]
+                b = pixels[i+2]
+                a = pixels[i+3]
+                if idx + 4 <= len(raw_data):
+                   raw_data[idx] = b
+                   raw_data[idx+1] = g
+                   raw_data[idx+2] = r
+                   raw_data[idx+3] = a
+                   idx += 4
+    
+    print(f"[CLIP] Converted {idx} bytes to raw_data (expected {buf_size})")
         
     # 2. Create Header
     class BITMAPINFOHEADER(ctypes.Structure):
@@ -356,37 +398,50 @@ def copy_pixels_to_clipboard(pixels, width, height):
     # 3. Global Alloc
     header_size = ctypes.sizeof(BITMAPINFOHEADER)
     total_size = header_size + buf_size
+    print(f"[CLIP] Allocating {total_size} bytes ({total_size / (1024*1024):.2f} MB)")
     
     hGlobal = kernel32.GlobalAlloc(0x0042, total_size) # GHND
-    if not hGlobal: return False
+    if not hGlobal:
+        print(f"[CLIP] ERROR: GlobalAlloc failed! GetLastError: {kernel32.GetLastError()}")
+        return False
+    print(f"[CLIP] GlobalAlloc succeeded, handle: {hGlobal}")
     
     ptr = kernel32.GlobalLock(hGlobal)
     if not ptr: 
+        err = kernel32.GetLastError()
+        print(f"[CLIP] ERROR: GlobalLock failed! GetLastError: {err}")
         kernel32.GlobalFree(hGlobal)
         return False
         
     try:
         ctypes.memmove(ptr, ctypes.byref(bmi), header_size)
         ctypes.memmove(ptr + header_size, (ctypes.c_char * len(raw_data)).from_buffer(raw_data), len(raw_data))
+        print(f"[CLIP] Copied header ({header_size} bytes) + data ({len(raw_data)} bytes) to global memory")
     finally:
         kernel32.GlobalUnlock(hGlobal)
         
     # 4. Set Clipboard
     if not user32.OpenClipboard(0):
+        print("[CLIP] OpenClipboard failed, retrying...")
         import time
         for _ in range(5):
              time.sleep(0.1)
              if user32.OpenClipboard(0): break
         else:
+             print("[CLIP] ERROR: OpenClipboard failed after retries")
              kernel32.GlobalFree(hGlobal)
              return False
             
     try:
         user32.EmptyClipboard()
-        user32.SetClipboardData(CF_DIB, hGlobal)
+        result = user32.SetClipboardData(CF_DIB, hGlobal)
+        print(f"[CLIP] SetClipboardData returned: {result}")
+        if not result:
+            print(f"[CLIP] ERROR: SetClipboardData failed! GetLastError: {kernel32.GetLastError()}")
     finally:
         user32.CloseClipboard()
         
+    print("[CLIP] Clipboard write complete")
     return True
 
 def copy_image_to_clipboard(image):

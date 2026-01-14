@@ -14,6 +14,7 @@ class BetterImageStroke(bpy.types.PropertyGroup):
             ('ARROW', "Arrow", ""),
             ('TEXT', "Text", ""),
             ('CROP', "Crop", ""),
+            ('PIXELATE', "Pixelate", ""),
         ],
         default='STROKE'
     )
@@ -28,9 +29,18 @@ class BetterImageStroke(bpy.types.PropertyGroup):
     size: IntProperty(name="Size", default=5)
     
     text: bpy.props.StringProperty(name="Text Content")
+    
+    # Text enhancements
+    text_show_bg: bpy.props.BoolProperty(name="Background", default=False)
+    text_bg_color: FloatVectorProperty(name="BG Color", size=4, default=(0,0,0,0.7), subtype='COLOR')
+    text_show_shadow: bpy.props.BoolProperty(name="Shadow", default=False)
+    text_shadow_color: FloatVectorProperty(name="Shadow Color", size=4, default=(0,0,0,1), subtype='COLOR')
+
     is_filled: bpy.props.BoolProperty(name="Filled", default=False)
     is_emoji: bpy.props.BoolProperty(name="Is Emoji", default=False)
     layer_id: bpy.props.IntProperty(name="Layer Index", default=0)
+    
+    pixelate_size: bpy.props.IntProperty(name="Pixel Size", default=10)
 
 class BetterImageLayer(bpy.types.PropertyGroup):
     name: bpy.props.StringProperty(name="Name", default="Layer")
@@ -65,6 +75,28 @@ class BetterImageEditorProperties(bpy.types.PropertyGroup):
         max=100,
         description="Size of the brush in pixels"
     )
+
+    use_stabilizer: BoolProperty(
+        name="Stabilize Stroke",
+        default=False,
+        description="Smoothen drawings"
+    )
+    
+    stabilizer_factor: bpy.props.FloatProperty(
+        name="Smoothness",
+        default=0.8,
+        min=0.0,
+        max=0.98,
+        description="Strength of stabilization"
+    )
+    
+    pixelate_size: IntProperty(
+        name="Pixelate Size",
+        default=10,
+        min=2,
+        max=100,
+        description="Tile size for pixelation"
+    )
     
     highlight_color: FloatVectorProperty(
         name="Highlight Color",
@@ -97,6 +129,7 @@ class BetterImageEditorProperties(bpy.types.PropertyGroup):
             ('ELLIPSE', "Ellipse", "Draw an ellipse"),
             ('TEXT', "Text", "Add text annotation"),
             ('CROP', "Crop", "Crop image region"),
+            ('PIXELATE', "Pixelate", "Pixelate/Blur region"),
         ],
         default='NONE',
         description="Currently active drawing tool"
@@ -114,6 +147,34 @@ class BetterImageEditorProperties(bpy.types.PropertyGroup):
         min=8,
         max=200,
         description="Font size for text"
+    )
+    
+    text_show_bg: BoolProperty(
+        name="Add Background", 
+        default=False,
+        description="Draw background box behind text"
+    )
+    
+    text_bg_color: FloatVectorProperty(
+        name="Back Color",
+        subtype='COLOR',
+        size=4,
+        default=(0.0, 0.0, 0.0, 0.5),
+        description="Color of text background"
+    )
+    
+    text_show_shadow: BoolProperty(
+        name="Add Shadow",
+        default=False,
+        description="Draw drop shadow for text"
+    )
+    
+    text_shadow_color: FloatVectorProperty(
+        name="Shadow Color",
+        subtype='COLOR',
+        size=4,
+        default=(0.0, 0.0, 0.0, 1.0),
+        description="Color of text shadow"
     )
     
     is_filled: BoolProperty(

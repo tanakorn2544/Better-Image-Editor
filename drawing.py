@@ -23,7 +23,47 @@ RUNTIME_CACHE = {
 
 # Draw handler reference
 _draw_handler = None
+
 _emoji_font_id = 99  # ID for emoji font
+_pixelate_shader = None
+
+def get_pixelate_shader():
+    global _pixelate_shader
+    if _pixelate_shader: return _pixelate_shader
+    
+    vertex_shader = '''
+        uniform mat4 ModelViewProjectionMatrix;
+        in vec2 pos;
+        in vec2 texCoord;
+        out vec2 uv;
+        void main() {
+            gl_Position = ModelViewProjectionMatrix * vec4(pos, 0.0, 1.0);
+            uv = texCoord;
+        }
+    '''
+    
+    fragment_shader = '''
+        uniform float pixelSize;
+        uniform vec2 bgSize;
+        uniform sampler2D image;
+        in vec2 uv;
+        out vec4 fragColor;
+        void main() {
+            vec2 tiles = bgSize / pixelSize;
+            vec2 mosaicUV = floor(uv * tiles) / tiles;
+            mosaicUV += (0.5 / tiles);
+            fragColor = texture(image, mosaicUV);
+            fragColor.a = 1.0; 
+        }
+    '''
+    
+    try:
+        _pixelate_shader = gpu.types.GPUShader(vertex_shader, fragment_shader)
+    except Exception as e:
+        print(f"Shader Compile Error: {e}")
+        return None
+        
+    return _pixelate_shader
 
 # Load Windows Emoji Font
 def load_emoji_font():
@@ -67,6 +107,30 @@ def draw_circle(center, radius, color, segments=32, fill=False):
     batch.draw(shader)
 
 
+def draw_pixelate_rect(start, end, image, pixel_size):
+    shader = get_pixelate_shader()
+    if not shader or not image: return
+    
+    # Blender 4.x: Convert image to GPU texture
+    texture = gpu.texture.from_image(image)
+    
+    shader.bind()
+    shader.uniform_sampler("image", texture)
+    shader.uniform_float("pixelSize", float(pixel_size))
+    shader.uniform_float("bgSize", (float(image.size[0]), float(image.size[1])))
+    
+    # Points
+    x1, y1 = start
+    x2, y2 = end
+    points = [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
+    
+    # UVs
+    w, h = image.size
+    uvs = [(x1/w, y1/h), (x2/w, y1/h), (x2/w, y2/h), (x1/w, y2/h)]
+    
+    batch = batch_for_shader(shader, 'TRI_FAN', {"pos": points, "texCoord": uvs})
+    batch.draw(shader)
+    
 def draw_rect(start, end, color, fill=False):
     """Draw a rectangle."""
     x1, y1 = start
@@ -108,11 +172,35 @@ def draw_arrow(start, end, color, size):
     batch.draw(shader)
 
 
-def draw_text(position, text, size, color, is_emoji=False):
+def draw_text(position, text, size, color, is_emoji=False, show_bg=False, bg_color=None, show_shadow=False, shadow_color=None):
     """Draw text using blf."""
     fid = _emoji_font_id if is_emoji else 0
-    blf.position(fid, position[0], position[1], 0)
     blf.size(fid, size)
+    
+    # Calculate Dimensions for Background
+    if show_bg and bg_color:
+        w, h = blf.dimensions(fid, text)
+        pad = size * 0.2
+        # BLF draws from bottom-left baseline. 
+        # dimensions returns width, height of bounding box.
+        # We need to approximate descender for box?
+        # Let's align box: x-pad, y-pad to x+w+pad, y+h+pad
+        # BLF coords are Bottom-Left? Verify. Usually Yes.
+        
+        # Draw Rect
+        x, y = position
+        rect_start = (x - pad, y - pad)
+        rect_end = (x + w + pad, y + h + pad * 1.5) # Extra top padding for ascent
+        draw_rect(rect_start, rect_end, bg_color, fill=True)
+
+    # Draw Shadow
+    if show_shadow and shadow_color:
+        offset = size * 0.05
+        blf.position(fid, position[0] + offset, position[1] - offset, 0)
+        blf.color(fid, shadow_color[0], shadow_color[1], shadow_color[2], shadow_color[3])
+        blf.draw(fid, text)
+
+    blf.position(fid, position[0], position[1], 0)
     blf.color(fid, color[0], color[1], color[2], color[3])
     blf.draw(fid, text)
 
@@ -141,7 +229,10 @@ def hit_test(context, mouse_pos):
             if x <= image_pos[0] <= x + w and y <= image_pos[1] <= y + h:
                 hit = True
                 
-        elif itype in {'RECTANGLE', 'ELLIPSE', 'ARROW'}:
+            if x <= image_pos[0] <= x + w and y <= image_pos[1] <= y + h:
+                hit = True
+                
+        elif itype in {'RECTANGLE', 'ELLIPSE', 'ARROW', 'PIXELATE'}:
              p1 = Vector(item.start_pos)
              p2 = Vector(item.end_pos)
              min_x = min(p1.x, p2.x) - 5
@@ -239,12 +330,27 @@ def draw_callback():
             
         elif itype == 'TEXT':
             pos = to_view(item.start_pos)
-            draw_text(pos, item.text, item.size, draw_color, is_emoji=is_emoji)
+            # Retrieve optional properties safely
+            show_bg = getattr(item, 'text_show_bg', False)
+            bg_col = getattr(item, 'text_bg_color', (0,0,0,0.5))
+            show_shadow = getattr(item, 'text_show_shadow', False)
+            shad_col = getattr(item, 'text_shadow_color', (0,0,0,1))
+            draw_text(pos, item.text, item.size, draw_color, is_emoji=is_emoji,
+                      show_bg=show_bg, bg_color=bg_col, show_shadow=show_shadow, shadow_color=shad_col)
+            
+
             
         elif itype == 'CROP':
             start = to_view(item.start_pos)
             end = to_view(item.end_pos)
             draw_rect(start, end, (1, 1, 1, 0.5), False)
+            
+        elif itype == 'PIXELATE':
+            start = to_view(item.start_pos)
+            end = to_view(item.end_pos)
+            # Need IMAGE for pixelate logic
+            # Image is available as context.space_data.image
+            draw_pixelate_rect(start, end, context.space_data.image, item.pixelate_size)
             
         # Selection Indicator
         if is_selected:
@@ -252,7 +358,7 @@ def draw_callback():
              if itype == 'STROKE' and len(item.points) > 0:
                  pt = to_view(item.points[0].pos)
                  draw_circle(pt, 5, (0, 1, 1, 1))
-             elif itype in {'TEXT', 'RECTANGLE', 'ELLIPSE', 'ARROW', 'CROP'}:
+             elif itype in {'TEXT', 'RECTANGLE', 'ELLIPSE', 'ARROW', 'CROP', 'PIXELATE'}:
                  pt = to_view(item.start_pos)
                  draw_circle(pt, 5, (0, 1, 1, 1))
 
@@ -282,6 +388,8 @@ def draw_callback():
                  draw_circle(c, r, color, fill=curr.get('fill', False))
              elif itype == 'ARROW': draw_arrow(start, end, color, size)
              elif itype == 'CROP': draw_rect(start, end, (1,1,1,0.5), False)
+             elif itype == 'PIXELATE':
+                 draw_pixelate_rect(start, end, context.space_data.image, curr.get('pixelate_size', 10))
 
     gpu.state.blend_set('NONE')
     gpu.state.line_width_set(1.0)
@@ -306,6 +414,7 @@ def view_to_image(context, view_coord):
 
 def bake_stroke_to_offscreen(offscreen, image):
     strokes = bpy.context.scene.better_image_data.strokes
+    print(f"[BAKE] Found {len(strokes)} strokes in scene data")
     w, h = image.size
     with offscreen.bind():
         try:
@@ -320,10 +429,11 @@ def bake_stroke_to_offscreen(offscreen, image):
                 
                 gpu.state.blend_set('NONE')
                 try:
-                    if image.bindcode == 0: image.gl_load()
-                    shader = gpu.shader.from_builtin('IMAGE_2D_COLOR')
+                    # Blender 4.x: Use gpu.texture.from_image() and uniform_sampler
+                    texture = gpu.texture.from_image(image)
+                    shader = gpu.shader.from_builtin('IMAGE_COLOR')
                     shader.bind()
-                    shader.uniform_image("image", image)
+                    shader.uniform_sampler("image", texture)
                     shader.uniform_float("color", (1, 1, 1, 1))
                     points = [(0, 0), (w, 0), (w, h), (0, h)]
                     tex_co = [(0, 0), (1, 0), (1, 1), (0, 1)]
@@ -333,10 +443,11 @@ def bake_stroke_to_offscreen(offscreen, image):
                 
                 gpu.state.blend_set('ALPHA')
                 # Iterate Scene Data
-                for item in strokes:
+                for idx, item in enumerate(strokes):
                     itype = item.type
                     color = item.color
                     size = item.size
+                    print(f"[BAKE] Drawing stroke {idx}: type={itype}, color={color[:3]}, size={size}")
                     gpu.state.line_width_set(size if itype == 'STROKE' else float(size/2))
                     
                     if itype == 'STROKE':
@@ -358,7 +469,14 @@ def bake_stroke_to_offscreen(offscreen, image):
                         radius = (start - end).length / 2
                         draw_circle(center, radius, color, fill=item.is_filled)
                     elif itype == 'TEXT':
-                        draw_text(item.start_pos, item.text, item.size, color, item.is_emoji)
+                        show_bg = getattr(item, 'text_show_bg', False)
+                        bg_col = getattr(item, 'text_bg_color', (0,0,0,0.5))
+                        show_shadow = getattr(item, 'text_show_shadow', False)
+                        shad_col = getattr(item, 'text_shadow_color', (0,0,0,1))
+                        draw_text(item.start_pos, item.text, item.size, color, item.is_emoji,
+                                  show_bg=show_bg, bg_color=bg_col, show_shadow=show_shadow, shadow_color=shad_col)
+                    elif itype == 'PIXELATE':
+                        draw_pixelate_rect(item.start_pos, item.end_pos, image, item.pixelate_size)
                 gpu.state.blend_set('NONE')
         except Exception as e:
             print(f"Bake Error: {e}")
@@ -405,6 +523,13 @@ def add_stroke_from_runtime(stroke_dict):
     if 'text' in stroke_dict: item.text = stroke_dict['text']
     if 'is_emoji' in stroke_dict: item.is_emoji = stroke_dict['is_emoji']
     if 'fill' in stroke_dict: item.is_filled = stroke_dict['fill']
+    if 'pixelate_size' in stroke_dict: item.pixelate_size = stroke_dict['pixelate_size']
+    
+    # Text Props
+    if 'text_show_bg' in stroke_dict: item.text_show_bg = stroke_dict['text_show_bg']
+    if 'text_bg_color' in stroke_dict: item.text_bg_color = stroke_dict['text_bg_color']
+    if 'text_show_shadow' in stroke_dict: item.text_show_shadow = stroke_dict['text_show_shadow']
+    if 'text_shadow_color' in stroke_dict: item.text_shadow_color = stroke_dict['text_shadow_color']
     
     # Coordinates
     if 'start' in stroke_dict: item.start_pos = stroke_dict['start']
@@ -424,21 +549,130 @@ def get_composed_image_pixels(image):
     Return pixels of Image + Annotations without modifying the original.
     Returns (pixels, width, height) or None.
     """
+    print(f"[CLIP] Starting get_composed_image_pixels for {image.name}")
     strokes = bpy.context.scene.better_image_data.strokes
     width, height = image.size
+    print(f"[CLIP] Image size: {width}x{height}")
     
     try: 
-        offscreen = gpu.types.GPUOffScreen(width, height, format='RGBA16F')
-    except: return None
-    
-    # Reuse the bake logic but don't clear strokes
-    bake_stroke_to_offscreen(offscreen, image)
+        offscreen = gpu.types.GPUOffScreen(width, height, format='RGBA8')
+        print(f"[CLIP] Offscreen created")
+    except Exception as e:
+        print(f"[CLIP] Offscreen creation failed: {e}")
+        return None
     
     try:
-        buffer = offscreen.texture_color.read()
-        return buffer.to_list(), width, height
+        # Do BAKE and READ in single bind to preserve strokes
+        with offscreen.bind():
+            # ------ BAKE PHASE ------
+            print(f"[BAKE] Starting bake_stroke_to_offscreen...")
+            print(f"[BAKE] Found {len(strokes)} strokes in scene data")
+            
+            with gpu.matrix.push_pop():
+                gpu.matrix.load_identity()
+                ortho_matrix = Matrix.Identity(4)
+                ortho_matrix[0][0] = 2.0 / width
+                ortho_matrix[1][1] = 2.0 / height
+                ortho_matrix[0][3] = -1.0
+                ortho_matrix[1][3] = -1.0
+                gpu.matrix.load_projection_matrix(ortho_matrix)
+                
+                # Draw base image
+                gpu.state.blend_set('NONE')
+                try:
+                    texture = gpu.texture.from_image(image)
+                    shader = gpu.shader.from_builtin('IMAGE_COLOR')
+                    shader.bind()
+                    shader.uniform_sampler("image", texture)
+                    shader.uniform_float("color", (1, 1, 1, 1))
+                    points = [(0, 0), (width, 0), (width, height), (0, height)]
+                    tex_co = [(0, 0), (1, 0), (1, 1), (0, 1)]
+                    batch = batch_for_shader(shader, 'TRI_FAN', {"pos": points, "texCoord": tex_co})
+                    batch.draw(shader)
+                except Exception as e: print(f"Error drawing image: {e}")
+                
+                # Draw strokes on top
+                gpu.state.blend_set('ALPHA')
+                for idx, item in enumerate(strokes):
+                    itype = item.type
+                    color = item.color
+                    size = item.size
+                    print(f"[BAKE] Drawing stroke {idx}: type={itype}, color={color[:3]}, size={size}")
+                    gpu.state.line_width_set(size if itype == 'STROKE' else float(size/2))
+                    
+                    # Helper to scale normalized coords (0-1) to pixel coords
+                    def to_px(pos):
+                        return (pos[0] * width, pos[1] * height)
+                    
+                    if itype == 'STROKE':
+                        pts = [(p.pos[0] * width, p.pos[1] * height) for p in item.points] 
+                        if len(pts) < 2: continue
+                        print(f"[BAKE]   STROKE first point: {pts[0]}, last point: {pts[-1]}")
+                        stroke_shader = get_shader()
+                        stroke_shader.bind()
+                        stroke_shader.uniform_float("color", color)
+                        stroke_batch = batch_for_shader(stroke_shader, 'LINE_STRIP', {"pos": pts})
+                        stroke_batch.draw(stroke_shader)
+                    elif itype == 'ARROW':
+                        start_px = to_px(item.start_pos)
+                        end_px = to_px(item.end_pos)
+                        print(f"[BAKE]   ARROW start: {start_px}, end: {end_px}")
+                        draw_arrow(start_px, end_px, color, size)
+                    elif itype == 'RECTANGLE':
+                        draw_rect(to_px(item.start_pos), to_px(item.end_pos), color, item.is_filled)
+                    elif itype == 'ELLIPSE':
+                        start = Vector(to_px(item.start_pos))
+                        end = Vector(to_px(item.end_pos))
+                        center = (start + end) / 2
+                        radius = (start - end).length / 2
+                        draw_circle(center, radius, color, fill=item.is_filled)
+                    elif itype == 'TEXT':
+                        show_bg = getattr(item, 'text_show_bg', False)
+                        bg_col = getattr(item, 'text_bg_color', (0,0,0,0.5))
+                        show_shadow = getattr(item, 'text_show_shadow', False)
+                        shad_col = getattr(item, 'text_shadow_color', (0,0,0,1))
+                        draw_text(to_px(item.start_pos), item.text, item.size, color, item.is_emoji,
+                                  show_bg=show_bg, bg_color=bg_col, show_shadow=show_shadow, shadow_color=shad_col)
+                    elif itype == 'PIXELATE':
+                        draw_pixelate_rect(to_px(item.start_pos), to_px(item.end_pos), image, item.pixelate_size)
+                gpu.state.blend_set('NONE')
+            
+            print(f"[BAKE] Bake completed")
+            
+            # ------ READ PHASE (still bound!) ------
+            print(f"[READ] Offscreen still bound, reading framebuffer...")
+            fb = gpu.state.active_framebuffer_get()
+            buffer = fb.read_color(0, 0, width, height, 4, 0, 'UBYTE')
+            print(f"[READ] Buffer read. len(buffer)={len(buffer)}")
+            
+            flat_pixels = []
+            for row in buffer:
+                if hasattr(row, 'to_list'):
+                    r_list = row.to_list()
+                elif hasattr(row, 'tolist'):
+                    r_list = row.tolist()
+                else:
+                    r_list = row
+                
+                if len(r_list) > 0 and isinstance(r_list[0], int):
+                    flat_pixels.extend(r_list)
+                else:
+                    for pixel in r_list:
+                         flat_pixels.extend(pixel)
+            
+            expected_len = width * height * 4
+            print(f"[READ] Flattened pixels: {len(flat_pixels)} (expected {expected_len})")
+            
+            if len(flat_pixels) != expected_len:
+                print(f"[READ] ERROR: Size mismatch!")
+                return None
+                
+            print(f"[CLIP] Returning {len(flat_pixels)} pixels")
+            return flat_pixels, width, height
     except Exception as e:
-        print(f"Read Error: {e}")
+        print(f"[READ] Exception: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 def delete_selected():

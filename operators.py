@@ -73,13 +73,14 @@ class BETTERIMG_OT_copy_to_clipboard(Operator):
         result = drawing.get_composed_image_pixels(image)
         if result:
             pixels, w, h = result
-            # Pixels are from GPU (0..1 floats usually, unless read() returns ints? 
-            # GPUOffScreen.texture_color.read() returns Buffer of floats for RGBA16F/32F
-            # Let's check format. We used RGBA16F.
-            # So it is floats.
-            clipboard.copy_pixels_to_clipboard(pixels, w, h)
-            self.report({'INFO'}, "Copied to Clipboard")
-            return {'FINISHED'}
+            # Pixels are 0..255 integers from GPU read_color('UBYTE')
+            success = clipboard.copy_pixels_to_clipboard(pixels, w, h)
+            if success:
+                self.report({'INFO'}, "Copied to Clipboard")
+                return {'FINISHED'}
+            else:
+                self.report({'ERROR'}, "Clipboard write failed")
+                return {'CANCELLED'}
         else:
             self.report({'ERROR'}, "Failed to copy")
             return {'CANCELLED'}
@@ -92,6 +93,7 @@ class BETTERIMG_OT_draw_tool(Operator):
     
     _start_mouse = None
     _start_item_pos = None # For undo/delta calc
+    _smooth_brush_pos = None # For stabilization (Screen Space Vector)
     
     def invoke(self, context, event):
         if context.area.type != 'IMAGE_EDITOR': return {'PASS_THROUGH'}
@@ -158,9 +160,15 @@ class BETTERIMG_OT_draw_tool(Operator):
             elif tool == 'CROP':
                 color = (1,1,1,1)
                 size = 1
+            elif tool == 'PIXELATE':
+                color = (1,1,1,1)
+                size = props.pixelate_size
             else:
                 color = (*props.brush_color, 1.0)
                 size = props.brush_size
+            
+            # Initialize Stabilization
+            self._smooth_brush_pos = Vector(mouse_pos)
             
             # Create TRANSIENT DICT for Runtime Cache
             new_item = {'type': item_type, 'color': color, 'size': size}
@@ -172,6 +180,8 @@ class BETTERIMG_OT_draw_tool(Operator):
                 new_item['end'] = image_pos
                 if tool in {'RECTANGLE', 'ELLIPSE'}:
                     new_item['fill'] = props.is_filled
+                if tool == 'PIXELATE':
+                    new_item['pixelate_size'] = props.pixelate_size
             
             drawing.RUNTIME_CACHE['current_stroke'] = new_item
             
@@ -187,8 +197,22 @@ class BETTERIMG_OT_draw_tool(Operator):
             mouse_pos = (event.mouse_region_x, event.mouse_region_y)
             image_pos = drawing.view_to_image(context, mouse_pos)
             
+            # Stabilization Logic
+            smoothed_image_pos = image_pos
+            if tool == 'DRAW' and props.use_stabilizer:
+                 target = Vector(mouse_pos)
+                 current = self._smooth_brush_pos
+                 factor = props.stabilizer_factor # 0.0 to 0.98
+                 # Lerp
+                 new_pos = current.lerp(target, 1.0 - factor)
+                 self._smooth_brush_pos = new_pos
+                 # Convert smoothed screen pos to image pos
+                 smoothed_image_pos = drawing.view_to_image(context, (new_pos.x, new_pos.y))
+            else:
+                 self._smooth_brush_pos = Vector(mouse_pos)
+            
             if tool == 'ERASER':
-                 drawing.erase_at(context, image_pos, props.brush_size)
+                 drawing.erase_at(context, smoothed_image_pos, props.brush_size)
                  context.area.tag_redraw()
                  return {'RUNNING_MODAL'}
             
@@ -220,9 +244,9 @@ class BETTERIMG_OT_draw_tool(Operator):
                 item = drawing.RUNTIME_CACHE['current_stroke']
                 if item:
                     if item['type'] == 'STROKE':
-                        item['points'].append(image_pos)
-                    elif item['type'] in {'ARROW', 'RECTANGLE', 'ELLIPSE', 'CROP'}:
-                        item['end'] = image_pos
+                        item['points'].append(smoothed_image_pos)
+                    elif item['type'] in {'ARROW', 'RECTANGLE', 'ELLIPSE', 'CROP', 'PIXELATE'}:
+                        item['end'] = image_pos # Shapes use raw mouse for snapping? Or smoothed? Let's use raw for Shapes to avoid lag.
                         
             context.area.tag_redraw()
             return {'RUNNING_MODAL'}
@@ -240,7 +264,7 @@ class BETTERIMG_OT_draw_tool(Operator):
                 try:
                     if item['type'] == 'STROKE':
                          if len(item['points']) < 2: valid = False
-                    elif item['type'] in {'RECTANGLE', 'ELLIPSE', 'ARROW', 'CROP'}:
+                    elif item['type'] in {'RECTANGLE', 'ELLIPSE', 'ARROW', 'CROP', 'PIXELATE'}:
                         start = Vector(item['start'])
                         end = Vector(item['end'])
                         if (start - end).length < 0.1: valid = False
@@ -428,7 +452,11 @@ class BETTERIMG_OT_text_popup(Operator):
         item = {
             'type': 'TEXT', 'pos': (self.pos_x, self.pos_y),
             'text': self.text, 'size': props.text_size,
-            'color': (*props.brush_color, 1.0)
+            'color': (*props.brush_color, 1.0),
+            'text_show_bg': props.text_show_bg,
+            'text_bg_color': props.text_bg_color,
+            'text_show_shadow': props.text_show_shadow,
+            'text_shadow_color': props.text_shadow_color
         }
         drawing.add_stroke_from_runtime(item)
         props.active_tool = 'MOVE'

@@ -85,7 +85,9 @@ class BETTERIMG_PT_main_panel(Panel):
         tool_btn('RECTANGLE', 'MESH_CUBOID', "", "tool_rect")
         tool_btn('ELLIPSE', 'MESH_CIRCLE', "", "tool_circle")
         tool_btn('TEXT', 'SMALL_CAPS', "", "tool_text")
+
         tool_btn('CROP', 'BORDERMOVE', "", "tool_crop")
+        tool_btn('PIXELATE', 'NODE_COMPOSITING', "", "tool_pixelate")
         
         # Tool Settings
         layout.separator()
@@ -111,6 +113,17 @@ class BETTERIMG_PT_main_panel(Panel):
             box.label(text="Text Settings", icon='FONT_DATA')
             box.prop(props, "brush_color", text="Color")
             box.prop(props, "text_size", text="Size")
+            
+            # Smart Text Settings
+            row = box.row(align=True)
+            row.prop(props, "text_show_bg", text="Background")
+            if props.text_show_bg:
+                row.prop(props, "text_bg_color", text="")
+                
+            row = box.row(align=True)
+            row.prop(props, "text_show_shadow", text="Shadow")
+            if props.text_show_shadow:
+                row.prop(props, "text_shadow_color", text="")
             
             # Emoji Grid
             layout.separator()
@@ -146,10 +159,18 @@ class BETTERIMG_PT_main_panel(Panel):
             box.label(text="Eraser Settings", icon='BRUSH_DATA')
             box.prop(props, "brush_size", text="Size")
             
+        elif props.active_tool == 'PIXELATE':
+            box.label(text="Pixelate Settings", icon='NODE_COMPOSITING')
+            box.prop(props, "pixelate_size", text="Tile Size")
+
         else: # Draw, Arrow, None
             box.label(text="Brush Settings", icon='BRUSH_DATA')
             box.prop(props, "brush_color", text="")
             box.prop(props, "brush_size", text="Size")
+            if props.active_tool == 'DRAW':
+                box.prop(props, "use_stabilizer")
+                if props.use_stabilizer:
+                    box.prop(props, "stabilizer_factor", slider=True)
         
         # Annotation Actions
         layout.separator()
